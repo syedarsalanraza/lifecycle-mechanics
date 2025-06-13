@@ -1,0 +1,237 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Braze Analyze Variants Dashboard (beta)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 980px;
+      margin: auto;
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 8px;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+    }
+    .controls {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      align-items: flex-end;
+    }
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      font-size: 14px;
+    }
+    .controls input, .controls select, .controls button {
+      margin-top: 6px;
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .controls button {
+      background-color: #45846D;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    .controls button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    .stats-cards {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .card {
+      flex: 1;
+      min-width: 180px;
+      color: white;
+      padding: 16px;
+      border-radius: 6px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .card-value {
+      font-size: 32px;
+      font-weight: bold;
+    }
+    .card-label {
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .card.best .card-label {
+      font-size: 18px;
+    }
+    .card.base { background-color: #718096; }
+    .card.variant { background-color: #38a169; }
+    .card.negative { background-color: #e53e3e; }
+    .card.best { background-color: #3182ce; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    th, td {
+      padding: 12px;
+      border: 1px solid #e2e8f0;
+      text-align: center;
+    }
+    th {
+      background-color: #3182ce;
+      color: white;
+      font-weight: normal;
+    }
+    td.variant {
+      text-align: left;
+    }
+    .confidence-green { background-color: #e6f4ea; border-radius: 4px; display: inline-block; padding: 2px 6px; }
+    .confidence-yellow { background-color: #fffbe6; border-radius: 4px; display: inline-block; padding: 2px 6px; }
+    .positive { color: #107c41; }
+    .negative-text { color: #e53e3e; }
+
+    .legend {
+      font-size: 14px;
+      background: #f9f9f9;
+      padding: 12px;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+    }
+    .legend p {
+      margin: 4px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .legend .box {
+      width: 16px;
+      height: 16px;
+      display: inline-block;
+      border-radius: 3px;
+    }
+    .legend .green-box { background-color: #38a169; }
+    .legend .yellow-box { background-color: #dd6b20; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>📈 A/B Test Results</h1>
+    <div class="controls">
+      <label>CSV Upload<input type="file" id="csvInput" accept=".csv" /></label>
+      <label>Test Duration (days)<input type="number" id="durationInput" min="1" value="7" /></label>
+      <label>Conversion Event<select id="eventSelect"><option>-- CSV first --</option></select></label>
+      <label>Baseline Variant<select id="baselineSelect"><option>-- CSV first --</option></select></label>
+      <button id="runBtn" disabled>Run Uplift Calculations</button>
+    </div>
+
+    <div class="stats-cards" id="statsCards"></div>
+
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>Variant</th><th>Entries</th><th>Conversions</th><th>Conversion Rate</th>
+          <th>% Uplift vs Baseline</th><th>Absolute Uplift vs Baseline</th><th>Weekly Lift vs Baseline</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <div class="legend">
+      <strong>Legend</strong>
+      <p><span class="box green-box"></span> High Confidence highlight (≥85%)</p>
+      <p><span class="box yellow-box"></span> Low Confidence highlight (<85%)</p>
+    </div>
+  </div>
+  <script>
+    function erf(x){var s=x>=0?1:-1;x=Math.abs(x);
+      var a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+      var t=1/(1+p*x),y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+      return s*y;
+    }
+    function normalCDF(x){return 0.5*(1+erf(x/Math.sqrt(2)));}
+
+    function computeConfidence(p1,n1,p2,n2){
+      const p=(p1*n1+p2*n2)/(n1+n2);
+      const se=Math.sqrt(p*(1-p)*(1/n1+1/n2));
+      if(se===0) return 100;
+      const z=(p1-p2)/se;
+      const pVal=2*(1-normalCDF(Math.abs(z)));
+      return Math.min(Math.max((1-pVal)*100,0),100);
+    }
+
+    function clearAll(){document.querySelector('#resultsTable tbody').innerHTML='';document.getElementById('statsCards').innerHTML='';}
+
+    document.getElementById('csvInput').addEventListener('change',e=>{
+      const file=e.target.files[0]; if(!file) return;
+      Papa.parse(file,{skipEmptyLines:true,complete:res=>{
+        window.rawData=res.data;
+        const variants=window.rawData[0].slice(1);
+        const evSel=document.getElementById('eventSelect'), baseSel=document.getElementById('baselineSelect');
+        evSel.innerHTML='<option>-- select event --</option>'; baseSel.innerHTML='<option>-- select baseline --</option>';
+        window.rawData.forEach((r,i)=>{if(i<2) return;const k=r[0].trim(); if(/^(Primary Conversion Event -|Conversion Event -)/.test(k)) evSel.add(new Option(k,i));});
+        variants.forEach((v,i)=>{const o=new Option(v,i+1); if(v.toLowerCase().includes('control')) o.selected=true; baseSel.add(o);});
+        if(!baseSel.value) baseSel.value=1; document.getElementById('runBtn').disabled=false; clearAll();
+      }});
+    });
+
+    document.getElementById('runBtn').addEventListener('click',()=>{
+      clearAll();
+      const days=+document.getElementById('durationInput').value;
+      const evIdx=+document.getElementById('eventSelect').value;
+      const baseIdx=+document.getElementById('baselineSelect').value;
+      if(!days||!evIdx||!baseIdx) return;
+      const findRow=k=>window.rawData.find(r=>r[0].trim().toLowerCase()===k.toLowerCase());
+      const entries=findRow('Total Entries'), evRow=window.rawData[evIdx];
+      const baseEnt=+entries[baseIdx], baseConv=+evRow[baseIdx], baseRate=baseConv/baseEnt;
+      const variants=window.rawData[0].slice(1), rows=[];
+      variants.forEach((v,i)=>{
+        const ent=+entries[i+1], conv=+evRow[i+1], rate=conv/ent;
+        const pct=(rate-baseRate)/baseRate*100, abs=conv-ent*baseRate, weekly=abs/(days/7);
+        const conf=computeConfidence(rate,ent,baseRate,baseEnt);
+        rows.push({v,ent,conv,rate,pct,abs,weekly,conf});
+      });
+      const cards=document.getElementById('statsCards');
+      rows.forEach(r=>{
+        if(r.v===variants[baseIdx-1]){
+          cards.insertAdjacentHTML('beforeend',`<div class="card base"><div class="card-value">${r.v}</div><div class="card-label">Baseline Variant</div></div>`);
+        } else {
+          const w=r.weekly.toFixed(0), clsFill=(r.weekly>=0?'variant':'negative');
+          cards.insertAdjacentHTML('beforeend',`<div class="card ${clsFill}"><div class="card-value">${w>=0?'+':''}${w}</div><div class="card-label">Weekly Lift: ${r.v} vs Baseline</div></div>`);
+        }
+      });
+      const best=rows.filter(r=>r.v!==variants[baseIdx-1]).sort((a,b)=>b.weekly-a.weekly)[0];
+      cards.insertAdjacentHTML('beforeend',`<div class="card best"><div class="card-value">${best.v}</div><div class="card-label">Best Performing Variant</div></div>`);
+      const tbody=document.querySelector('#resultsTable tbody');
+      rows.forEach(r=>{
+        const tr=document.createElement('tr');
+        function cell(val,conf,isPct){
+          const text=isPct?`${val>=0?'+':''}${val.toFixed(2)}%`:`${val>=0?'+':''}${val.toFixed(0)}`;
+          const colorClass=val>=0?'positive':'negative-text';
+          const bgClass=conf>=85?'confidence-green':'confidence-yellow';
+          return `<td><span class="${bgClass} ${colorClass}">${text}</span></td>`;
+        }
+        tr.innerHTML=`<td class="variant">${r.v}</td><td>${r.ent.toLocaleString()}</td><td>${r.conv.toLocaleString()}</td><td>${(r.rate*100).toFixed(2)}%</td>${cell(r.pct,r.conf,true)}${cell(r.abs,r.conf,false)}${cell(r.weekly,r.conf,false)}`;
+        tbody.appendChild(tr);
+      });
+    });
+  </script>
+</body>
+</html>
